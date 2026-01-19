@@ -7,11 +7,11 @@
 
 import SwiftUI
 
-public struct FpsWorkloadView: View {
+struct FpsWorkloadView: View {
     @State private var angle: Double = 0
     let intensity: Int // 1..10 (higher = heavier)
 
-    public var body: some View {
+    var body: some View {
         ZStack {
             TimelineView(.animation) { _ in
                 ZStack {

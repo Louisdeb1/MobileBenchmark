@@ -7,7 +7,7 @@
 
 import Foundation
 
-enum BenchmarkCategory: String, Codable, CaseIterable {
+public enum BenchmarkCategory: String, Codable, CaseIterable {
     case cpu = "CPU"
     case memory = "Memory"
     case disk = "Disk"
@@ -20,15 +20,15 @@ enum BenchmarkStatus: String, Codable {
     case failed
 }
 
-struct BenchmarkResult: Identifiable, Codable {
-    let id: UUID
-    let name: String
-    let category: BenchmarkCategory
-    let startedAt: Date
-    let endedAt: Date
-    let durationMs: Double
-    let metrics: [MetricValue]
-    let notes: String?
+public struct BenchmarkResult: Identifiable, Codable {
+    public let id: UUID
+    public let name: String
+    public let category: BenchmarkCategory
+    public let startedAt: Date
+    public let endedAt: Date
+    public let durationMs: Double
+    public let metrics: [MetricValue]
+    public let notes: String?
 
     init(
         id: UUID = UUID(),
@@ -50,7 +50,7 @@ struct BenchmarkResult: Identifiable, Codable {
     }
 }
 
-enum MetricUnit: String, Codable {
+public enum MetricUnit: String, Codable {
     case ms
     case opsPerSec
     case mb
@@ -59,11 +59,11 @@ enum MetricUnit: String, Codable {
     case bytes
 }
 
-struct MetricValue: Identifiable, Codable {
-    let id: UUID
-    let key: String
-    let value: Double
-    let unit: MetricUnit
+public  struct MetricValue: Identifiable, Codable {
+    public let id: UUID
+    public let key: String
+    public let value: Double
+    public let unit: MetricUnit
 
     init(id: UUID = UUID(), key: String, value: Double, unit: MetricUnit) {
         self.id = id

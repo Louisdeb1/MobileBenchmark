@@ -17,6 +17,5 @@ let package = Package(
             name: "MobileBenchmark",
             path: "Sources/"
         ),
-
     ]
 )

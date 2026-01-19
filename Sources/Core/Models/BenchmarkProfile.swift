@@ -7,32 +7,6 @@
 
 import Foundation
 
-enum BenchmarkProfileID: String, Codable, CaseIterable, Identifiable {
-    case gaming
-    case batteryFriendly
-    case ciBaseline
-    case custom
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .gaming: return "Gaming"
-        case .batteryFriendly: return "Battery-friendly"
-        case .ciBaseline: return "CI Baseline"
-        case .custom: return "Custom"
-        }
-    }
-
-    var subtitle: String {
-        switch self {
-        case .gaming: return "Higher load: FPS + GPU heavier, larger payloads."
-        case .batteryFriendly: return "Shorter tests with smaller payloads."
-        case .ciBaseline: return "Repeatable settings for regression checks."
-        case .custom: return "Your own tunable settings."
-        }
-    }
-}
 
 struct BenchmarkProfile: Codable, Equatable {
     var id: BenchmarkProfileID
