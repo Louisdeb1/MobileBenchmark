@@ -1,0 +1,201 @@
+name: Build MobileBenchmark IPA
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/build-mobilebenchmark.yml
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Clone exact upstream revision
+        run: |
+          set -euo pipefail
+          git clone https://github.com/Mulla6518/MobileBenchmark.git MobileBenchmark
+          git -C MobileBenchmark checkout --detach 488f0200ef16ffb03a31958d13f2b678eaeb29ea
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Prepare portable package path and Metal resources
+        working-directory: MobileBenchmark
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              assert text.count(old) == 1, f"Unexpected upstream content: {path}"
+              p.write_text(text.replace(old, new))
+
+          replace_once(
+              "Example/Example.xcodeproj/project.pbxproj",
+              "relativePath = ../../MobileBenchmark;",
+              "relativePath = ..;",
+          )
+          replace_once(
+              "Package.swift",
+              'path: "Sources/"',
+              'path: "Sources/",\n            resources: [.process("Core/Benchmarks/Shaders")]',
+          )
+          replace_once(
+              "Sources/Core/Benchmarks/GpuBenchmark.swift",
+              "device.makeDefaultLibrary(bundle: .main)",
+              "device.makeDefaultLibrary(bundle: .module)",
+          )
+          scheme = Path("Example/Example.xcodeproj/xcshareddata/xcschemes/Example.xcscheme")
+          scheme.parent.mkdir(parents=True, exist_ok=True)
+          scheme.write_text('''<?xml version="1.0" encoding="UTF-8"?>
+          <Scheme LastUpgradeVersion="2610" version="1.3">
+            <BuildAction parallelizeBuildables="YES" buildImplicitDependencies="YES">
+              <BuildActionEntries>
+                <BuildActionEntry buildForTesting="YES" buildForRunning="YES" buildForProfiling="YES" buildForArchiving="YES" buildForAnalyzing="YES">
+                  <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="4FDF6EC52F1DE70F0080C0ED" BuildableName="Example.app" BlueprintName="Example" ReferencedContainer="container:Example.xcodeproj"/>
+                </BuildActionEntry>
+              </BuildActionEntries>
+            </BuildAction>
+            <ArchiveAction buildConfiguration="Release" revealArchiveInOrganizer="YES"/>
+          </Scheme>
+          ''')
+          PY
+          git diff --check
+          git diff --stat
+
+      - name: Build unsigned iPhone Release arm64
+        working-directory: MobileBenchmark
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project Example/Example.xcodeproj \
+            -scheme Example \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            -resultBundlePath BuildResult.xcresult \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            PRODUCT_BUNDLE_IDENTIFIER=com.louis.mobilebenchmark \
+            INFOPLIST_KEY_CFBundleDisplayName=MobileBenchmark \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=NO \
+            SUPPORTS_MACCATALYST=NO \
+            build 2>&1 | tee build.log
+
+      - name: Package and validate MobileBenchmark.ipa
+        working-directory: MobileBenchmark
+        run: |
+          set -euo pipefail
+          APP=build/Build/Products/Release-iphoneos/Example.app
+          test -d "$APP"
+          mkdir -p Payload
+          ditto "$APP" Payload/MobileBenchmark.app
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import plistlib
+          import stat
+          import struct
+          import subprocess
+          import zipfile
+          from pathlib import Path
+
+          app = Path("Payload/MobileBenchmark.app")
+          info = plistlib.loads((app / "Info.plist").read_bytes())
+          assert info["CFBundleIdentifier"] == "com.louis.mobilebenchmark"
+          assert info["CFBundlePackageType"] == "APPL"
+          assert info["CFBundleSupportedPlatforms"] == ["iPhoneOS"]
+          name = info["CFBundleExecutable"]
+          assert name and Path(name).name == name
+          binary = app / name
+          data = binary.read_bytes()
+          assert binary.stat().st_mode & stat.S_IXUSR, "Binary is not executable"
+          arch = subprocess.check_output(["lipo", "-archs", str(binary)], text=True).strip()
+          assert arch == "arm64", arch
+          header = struct.unpack_from("<8I", data)
+          assert header[0] == 0xFEEDFACF, "Not a little-endian 64-bit Mach-O"
+          assert header[1] == 0x0100000C, "Not ARM64"
+          assert header[3] == 2, "Not an executable"
+          offset, ios_device = 32, False
+          for _ in range(header[4]):
+              command, size = struct.unpack_from("<II", data, offset)
+              assert size >= 8 and offset + size <= len(data)
+              if command == 0x32:  # LC_BUILD_VERSION: iOS device is platform 2.
+                  assert struct.unpack_from("<I", data, offset + 8)[0] == 2
+                  ios_device = True
+              elif command == 0x25:  # LC_VERSION_MIN_IPHONEOS
+                  ios_device = True
+              elif command in (0x21, 0x2C):  # LC_ENCRYPTION_INFO[_64]
+                  assert struct.unpack_from("<I", data, offset + 16)[0] == 0
+              offset += size
+          assert ios_device, "Missing iOS device platform declaration"
+          metal = list(app.rglob("default.metallib"))
+          assert metal and all(p.stat().st_size > 0 for p in metal), "Metal library missing"
+          assert not list(app.rglob("embedded.mobileprovision")), "Unexpected provisioning profile"
+          entitlements = subprocess.run(
+              ["codesign", "-d", "--entitlements", ":-", str(app)],
+              capture_output=True,
+          )
+          if entitlements.returncode == 0 and entitlements.stdout.strip():
+              values = plistlib.loads(entitlements.stdout)
+              assert not values, f"Unexpected entitlements: {list(values)}"
+
+          subprocess.run(["zip", "-q", "-r", "MobileBenchmark.ipa", "Payload"], check=True)
+          ipa = Path("MobileBenchmark.ipa")
+          prefix = "Payload/MobileBenchmark.app/"
+          with zipfile.ZipFile(ipa) as archive:
+              assert archive.testzip() is None, "Archive CRC failed"
+              assert all(p == "Payload/" or p.startswith(prefix) for p in archive.namelist())
+              archived_info = plistlib.loads(archive.read(prefix + "Info.plist"))
+              assert archived_info == info
+              assert archive.read(prefix + name) == data
+              assert (archive.getinfo(prefix + name).external_attr >> 16) & stat.S_IXUSR
+
+          report = {
+              "source_commit": "488f0200ef16ffb03a31958d13f2b678eaeb29ea",
+              "configuration": "Release",
+              "bundle_identifier": info["CFBundleIdentifier"],
+              "executable": name,
+              "architecture": arch,
+              "platform": "iPhoneOS device",
+              "minimum_os_version": info.get("MinimumOSVersion"),
+              "metal_libraries": [str(p) for p in metal],
+              "signing": "CODE_SIGNING_ALLOWED=NO; CODE_SIGNING_REQUIRED=NO; CODE_SIGN_IDENTITY=",
+              "ipa_sha256": hashlib.sha256(ipa.read_bytes()).hexdigest(),
+              "device_install_tested": False,
+          }
+          Path("validation.json").write_text(json.dumps(report, indent=2) + "\n")
+          print(json.dumps(report, indent=2))
+          PY
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: MobileBenchmark-IPA
+          path: |
+            MobileBenchmark/MobileBenchmark.ipa
+            MobileBenchmark/validation.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MobileBenchmark-build-diagnostics
+          path: |
+            MobileBenchmark/build.log
+            MobileBenchmark/BuildResult.xcresult
+          if-no-files-found: ignore
+          retention-days: 7
